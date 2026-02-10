@@ -1,0 +1,107 @@
+name: "Build version.dll"
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PROJECT_NAME: version
+
+jobs:
+  build:
+    name: Build x86_64-windows (MSVC)
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.set_version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set version
+        id: set_version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+          else
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VERSION="1.0.0-dev.${{ github.run_number }}.g${SHORT_SHA}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build with MSVC
+        shell: cmd
+        run: |
+          :: 1. 编译资源
+          rc.exe /v src/version.rc
+          cl.exe /c /O1 /GL /GS- /MT src/proxy.c /Fo:proxy.obj
+
+          :: 3. 链接生成
+          link.exe /DLL /OUT:version.dll /ENTRY:DllMain /NODEFAULTLIB /SUBSYSTEM:WINDOWS ^
+          /LTCG /OPT:REF /OPT:ICF ^
+          proxy.obj src/version.res kernel32.lib user32.lib
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION="${{ steps.set_version.outputs.version }}"
+          TARGET="x86_64-windows"
+          PACKAGE_DIR="${PROJECT_NAME}-${VERSION}-${TARGET}"
+
+          mkdir -p "release/${PACKAGE_DIR}"
+          # 复制生成的 DLL
+          cp "version.dll" "release/${PACKAGE_DIR}/"
+          # 复制可选文件
+          cp LICENSE "release/${PACKAGE_DIR}/" 2>/dev/null || true
+          cp README.md "release/${PACKAGE_DIR}/" 2>/dev/null || true
+
+          cd release
+          # Windows 环境下 7z 是预装的，比 zip 更方便
+          7z a "${PROJECT_NAME}-${VERSION}-${TARGET}.zip" "${PACKAGE_DIR}"
+          rm -rf "${PACKAGE_DIR}"
+
+          echo "📦 Package content:"
+          ls -R
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-x86_64-windows
+          path: release/*.zip
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: ${{ env.PROJECT_NAME }}-*
+          merge-multiple: true
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: release/*

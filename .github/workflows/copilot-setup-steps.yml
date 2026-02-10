@@ -1,0 +1,36 @@
+name: "Copilot Setup Steps"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Install system utilities
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq tree ripgrep git
+
+      - name: Initial checks
+        run: |
+          zig version 2>&1 || echo "zig version check failed"
+          zig build 2>&1 || echo "zig build failed"
+          zig build test 2>&1 || echo "zig build test failed"
